@@ -919,6 +919,13 @@ Also note, that maqgnetic declination changes with time, so recheck your value e
     //#define FRSKY_SPORT_OVERRIDE_DEVICE_ASS       FRSKY_SPORT_DEVICE_10   // default 10 - TODO
     //#define FRSKY_SPORT_OVERRIDE_DEVICE_ACC       FRSKY_SPORT_DEVICE_20   // default 20 - no hardware sensor yet
     //#define FRSKY_SPORT_OVERRIDE_DEVICE_MAG       FRSKY_SPORT_DEVICE_21   // default 21 - no hardware sensor yet
+    // Enable reading of hardware sensors.
+    //#define FRSKY_SPORT_READ_VARIO
+    //#define FRSKY_SPORT_READ_DEVICE_FLVSS
+    //#define FRSKY_SPORT_READ_DEVICE_FCS
+    //#define FRSKY_SPORT_READ_DEVICE_GPS      // TODO
+    //#define FRSKY_SPORT_READ_DEVICE_RPM      // TODO
+    //#define FRSKY_SPORT_READ_DEVICE_SP2UART  // TODO
 
   /********************************************************************/
   /****                             Buzzer                         ****/

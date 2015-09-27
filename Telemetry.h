@@ -16,7 +16,7 @@
 
 #if defined(FRSKY_TELEMETRY)
     // Definitions
-    #define TELEMETRY_BAUD     9600  
+    #define TELEMETRY_BAUD     9600
 
     // Frame protocol
     #define Protocol_Header    0x5E
@@ -58,10 +58,23 @@
 
 #if defined(SPORT_TELEMETRY)
 
-    #define TELEMETRY_BAUD   57600  
-    #define FRSKY_START_STOP  0x7e
-    #define FRSKY_BYTESTUFF   0x7d
-    #define FRSKY_STUFF_MASK  0x20
+    #define TELEMETRY_BAUD       57600
+    #define FRSKY_SPORT_START_STOP      0x7e
+    #define FRSKY_SPORT_BYTESTUFF       0x7d
+    #define FRSKY_SPORT_STUFF_MASK      0x20
+    #define FRSKY_SPORT_DATA_FRAME      0x10
+    #define FRSKY_SPORT_RX_PACKET_SIZE     9
+
+    #define FRSKY_SPORT_ALT_FIRST_ID    0x0100
+    #define FRSKY_SPORT_ALT_LAST_ID     0x010f
+    #define FRSKY_SPORT_VARIO_FIRST_ID  0x0110
+    #define FRSKY_SPORT_VARIO_LAST_ID   0x011f
+    #define FRSKY_SPORT_CURR_FIRST_ID   0x0200
+    #define FRSKY_SPORT_CURR_LAST_ID    0x020f
+    #define FRSKY_SPORT_VFAS_FIRST_ID   0x0210
+    #define FRSKY_SPORT_VFAS_LAST_ID    0x021f
+    #define FRSKY_SPORT_CELLS_FIRST_ID  0x0300
+    #define FRSKY_SPORT_CELLS_LAST_ID   0x030f
 
     // FrSky data IDs (2 bytes)
     #define FRSKY_SPORT_ALT_ID            0x0100 // used by Vario
@@ -178,6 +191,15 @@
       #undef  FRSKY_SPORT_DEVICE_MAG
       #define FRSKY_SPORT_DEVICE_MAG FRSKY_SPORT_OVERRIDE_DEVICE_MAG
     #endif
+    // Receive buffer state machine state enum
+    enum FrSkyDataState {
+      STATE_DATA_IDLE,
+      STATE_DATA_IN_FRAME,
+      STATE_DATA_XOR,
+    };
+
+    #define FRSKY_SPORT_DATA_S32(packet)  (*((int32_t *)(packet+4)))
+    #define FRSKY_SPORT_DATA_U32(packet)  (*((uint32_t *)(packet+4)))
 #endif // S.PORT telemetry
 
 // Variables

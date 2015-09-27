@@ -453,6 +453,8 @@ void run_telemetry(void)
   #ifdef VBAT || POWERMETER
     static short _currentFCSValue;
   #endif
+  uint8_t frskyRxBuffer[FRSKY_SPORT_RX_PACKET_SIZE];   // Receive buffer. 9 bytes (full packet), worst case 18 bytes with byte-stuffing (+1)
+  //uint8_t SPORT_PRESENT = 0; // TODO
 
   void FrSkySport_sendByte(uint8_t byte)
   {
@@ -463,9 +465,9 @@ void run_telemetry(void)
     _FrSkySport_crc += _FrSkySport_crc >> 8; //0-0FF
     _FrSkySport_crc &= 0x00ff;
 
-    if ( (byte == FRSKY_START_STOP) || (byte == FRSKY_BYTESTUFF) ) {
-      SerialWrite(TELEMETRY_SERIAL, FRSKY_BYTESTUFF);
-      byte &= ~FRSKY_STUFF_MASK;
+    if ( (byte == FRSKY_SPORT_START_STOP) || (byte == FRSKY_SPORT_BYTESTUFF) ) {
+      SerialWrite(TELEMETRY_SERIAL, FRSKY_SPORT_BYTESTUFF);
+      byte &= ~FRSKY_SPORT_STUFF_MASK;
     }
 
     SerialWrite(TELEMETRY_SERIAL, byte);
@@ -720,47 +722,166 @@ void run_telemetry(void)
     SerialOpen(TELEMETRY_SERIAL,TELEMETRY_BAUD);
   }
 
+  // Reading S.Port devices >>>
+  bool checkSportPacket(uint8_t *packet)
+  {
+    short crc = 0;
+    for (int i=1; i<FRSKY_SPORT_RX_PACKET_SIZE; i++) {
+      crc += packet[i]; //0-1FF
+      crc += crc >> 8; //0-100
+      crc &= 0x00ff;
+      crc += crc >> 8; //0-0FF
+      crc &= 0x00ff;
+    }
+    return (crc == 0x00ff);
+  }
+
+  void processSportPacket(uint8_t *packet)
+  {
+    //uint8_t  dataId = packet[0];
+    uint8_t  prim   = packet[1];
+    uint16_t appId  = *((uint16_t *)(packet+2));
+
+    if (!checkSportPacket(packet))
+      return;
+    //SPORT_PRESENT = 1;
+    //lastPacket = currentTime;//maybe
+
+    switch (prim){
+      case FRSKY_SPORT_DATA_FRAME:
+          if (appId >= FRSKY_SPORT_ALT_FIRST_ID && appId <= FRSKY_SPORT_ALT_LAST_ID) {
+          #ifdef FRSKY_SPORT_READ_VARIO
+            static int32_t baroAltitudeOffset;
+            int32_t baroAltitude = FRSKY_SPORT_DATA_S32(packet);
+            if (!baroAltitudeOffset)baroAltitudeOffset = -baroAltitude;
+            baroAltitude += baroAltitudeOffset;
+            alt.EstAlt = baroAltitude;
+          #endif
+          } else if (appId >= FRSKY_SPORT_VARIO_FIRST_ID && appId <= FRSKY_SPORT_VARIO_LAST_ID) {
+          #ifdef FRSKY_SPORT_READ_VARIO
+            int16_t varioSpeed = FRSKY_SPORT_DATA_S32(packet);
+            alt.vario = varioSpeed;
+            // debug[0] = varioSpeed;
+          #endif
+          } else if (appId >= FRSKY_SPORT_CURR_FIRST_ID && appId <= FRSKY_SPORT_CURR_LAST_ID) {
+          #ifdef FRSKY_SPORT_READ_FCS
+            #if !defined(POWERMETER)
+              static uint32_t lastRead = currentTime;
+              static uint32_t currentConsumption;
+              uint16_t current = FRSKY_SPORT_DATA_U32(packet);//10ths amp, 10 = 1 amp
+              //current = 10;//simulate 1 amp
+              current *= 100;// convert 10ths amp to milliamps
+              currentConsumption += ((currentTime-lastRead) * (uint32_t)(current)) / 100000;
+              lastRead = currentTime;
+              analog.amperage = (uint16_t) current;
+              analog.intPowerMeterSum = (uint16_t) (currentConsumption / 36000);
+              //debug[0] = current;
+            #endif
+          #endif
+          } else if (appId >= FRSKY_SPORT_VFAS_FIRST_ID && appId <= FRSKY_SPORT_VFAS_LAST_ID) {
+          #ifdef FRSKY_SPORT_READ_FCS
+            #if !defined(VBAT) && !defined(FRSKY_SPORT_READ_FLVSS)
+               uint16_t vfas = FRSKY_SPORT_DATA_U32(packet);
+               analog.vbat = (int16_t) (vfas / 10);
+            #endif
+          #endif
+          } else if (appId >= FRSKY_SPORT_CELLS_FIRST_ID && appId <= FRSKY_SPORT_CELLS_LAST_ID) {
+          #ifdef FRSKY_SPORT_READ_FLVSS
+            uint32_t cell_data = FRSKY_SPORT_DATA_U32(packet);
+            uint8_t battnumber = cell_data & 0xF;
+            if(battnumber < 6){     //currently only support upto 6 cells
+              cells[battnumber] = ((cell_data & 0x000FFF00) >> 8) *2 /10;
+              cells[battnumber+1] = ((cell_data & 0xFFF00000) >> 20) *2 /10;
+            }
+            #ifndef VBAT
+              int16_t sum = 0;
+              for (int i=0; i < 6; i++){
+                sum += cells[i];
+                //debug[i] = cells[i];
+              }
+              analog.vbat = (int16_t) (sum / 10);
+            #endif
+          #endif
+          }
+        break;
+    }
+  }
+  // Read S.Port devices
+
   void run_telemetry(void)
   {
-    static uint8_t lastRx = 0;
+    static uint8_t numPktBytes = 0;
+    static uint8_t dataState = STATE_DATA_IDLE;
     uint8_t c = SerialAvailable(TELEMETRY_SERIAL);
 
     while (c--) {
-      int rx = SerialRead(TELEMETRY_SERIAL);
-      if (lastRx == FRSKY_START_STOP)
-      {
-        switch (rx)
-        {
-          case FRSKY_SPORT_DEVICE_VARIO: // Variometer
-              FrSkySport_Vario();
+      uint8_t rx = SerialRead(TELEMETRY_SERIAL);
+
+      if (rx == FRSKY_SPORT_START_STOP) {
+        dataState = STATE_DATA_IN_FRAME;
+        numPktBytes = 0; // S.Port read
+      } else {
+        switch (dataState) {
+          case STATE_DATA_XOR:
+            frskyRxBuffer[numPktBytes++] = rx ^ FRSKY_SPORT_STUFF_MASK;
+            dataState = STATE_DATA_IN_FRAME;
             break;
-          case FRSKY_SPORT_DEVICE_FLVSS: // FLVSS
-              FrSkySport_FLVSS();
-            break;
-          case FRSKY_SPORT_DEVICE_FCS: // FCS-40A/FCS-150A
-              FrSkySport_FCS();
-            break;
-          case FRSKY_SPORT_DEVICE_GPS: // GPS
-              FrSkySport_GPS();
-            break;
-          case FRSKY_SPORT_DEVICE_RPM: // RPM
-            FrSkySport_RPM();          // provides num sat and distance to home
-            break;
-          //case FRSKY_SPORT_DEVICE_SP2UART: // S.Port tu UART TODO
-          //  FrSkySport_SP2UART();    // provides 2 temperatures
-          //  break;
-          //case FRSKY_SPORT_DEVICE_ASS: // ASS TODO
-          //  FrSkySport_ASS();
-          //  break;
-          case FRSKY_SPORT_DEVICE_ACC: // ACC
-              FrSkySport_ACC();
-            break;
-          case FRSKY_SPORT_DEVICE_MAG: // MAG heading implemented as second GPS device
-              FrSkySport_MAGHeading();
+          case STATE_DATA_IN_FRAME:
+            switch (rx) {
+              // Code for sending data >>>
+              case FRSKY_SPORT_DEVICE_VARIO: // Variometer
+                FrSkySport_Vario();
+                dataState = STATE_DATA_IDLE;
+                break;
+              case FRSKY_SPORT_DEVICE_FLVSS: // FLVSS
+                FrSkySport_FLVSS();
+                dataState = STATE_DATA_IDLE;
+                break;
+              case FRSKY_SPORT_DEVICE_FCS: // FCS-40A/FCS-150A
+                FrSkySport_FCS();
+                dataState = STATE_DATA_IDLE;
+                break;
+              case FRSKY_SPORT_DEVICE_GPS: // GPS
+                FrSkySport_GPS();
+                dataState = STATE_DATA_IDLE;
+                break;
+              case FRSKY_SPORT_DEVICE_RPM: // RPM
+                FrSkySport_RPM();          // provides num sat and distance to home
+                dataState = STATE_DATA_IDLE;
+                break;
+              //case FRSKY_SPORT_DEVICE_SP2UART: // S.Port tu UART TODO
+              //  FrSkySport_SP2UART();    // provides 2 temperatures
+              //  dataState = STATE_DATA_IDLE;
+              //  break;
+              //case FRSKY_SPORT_DEVICE_ASS: // ASS TODO
+              //  FrSkySport_ASS();
+              //  dataState = STATE_DATA_IDLE;
+              //  break;
+              case FRSKY_SPORT_DEVICE_ACC: // ACC
+                FrSkySport_ACC();
+                dataState = STATE_DATA_IDLE;
+                break;
+              case FRSKY_SPORT_DEVICE_MAG: // MAG heading implemented as second GPS device
+                FrSkySport_MAGHeading();
+                dataState = STATE_DATA_IDLE;
+                break;
+              // Code for sending data <<<
+              // Code for receiving sensor data >>>
+              case FRSKY_SPORT_BYTESTUFF:
+                dataState = STATE_DATA_XOR;// XOR next byte
+                break;
+              default:
+                frskyRxBuffer[numPktBytes++] = rx;
+                break;
+              // Code for receiving sensor data <<<
+            }
             break;
         }
       }
-      lastRx = rx;
+      if (numPktBytes == FRSKY_SPORT_RX_PACKET_SIZE) {
+        processSportPacket(frskyRxBuffer);
+        dataState = STATE_DATA_IDLE;
+      }
     }
   }
 #endif // S.PORT telemetry
